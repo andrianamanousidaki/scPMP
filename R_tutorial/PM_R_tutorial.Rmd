@@ -1,0 +1,227 @@
+---
+title: "scPMP Clustering Tutorial"
+author: "Andriana Manousidaki"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+\newtheorem{definition}{Definition}
+## Introduction
+
+Recent advances in single-cell technologies have enabled high-resolution characterization
+of tissue and cancer compositions. Although numerous tools for dimension reduction
+and clustering are available for single-cell data analyses, these methods often fail to
+simultaneously preserve local cluster structure and global data geometry. 
+
+To address those challenges, we developed a novel analyses framework, \underline{S}ingle-\underline{C}ell \underline{P}ath \underline{M}etrics \underline{P}rofiling (scPMP), which leverages the usefulness of $p$-powered path metrics for dimension reduction and clustering. Distances between cells are measured in a data-driven way which is both density sensitive (decreasing distances across high density regions) and respects the underlying data geometry. By combining path metrics with multidimensional scaling, a low dimensional embedding of the data is obtained which respects both the global geometry of the data and preserves cluster structure.
+
+\begin{definition}{Path metric.}
+	Given a discrete data set $X$, the discrete $p$-power weighted path metric between $a,b \in X$ is defined as
+	$$\ell_p(a,b):=\inf_{(x_0, \ldots,x_s)} \left(\sum_{i=0}^{s-1}\big\Vert x_{i+1}-x_{i}\big\Vert^p_{2}\right)^{\frac{1}{p}}\, ,$$
+	where the infimum is taken over all sequences of points $x_0,\ldots, x_s$ in $X$ with $x_0=a$ and $x_s=b$. 
+\end{definition}
+
+Below, we present a tutorial on the use of scPMP algorithm for the clustering of a data set that simulates single-cell gene expression of three clusters of cells. 
+
+
+
+## Step 1: Load libraries, data set and clustering functions
+
+First let's load required libraries:
+
+```{r libraries, warning = FALSE, message = FALSE}
+library(RANN)
+library(ClusterR)
+library(plyr)
+library(cluster)
+library(mclust) 
+library(igraph)
+library(RANN)
+library(Matrix)
+library(expm)
+library(cccd)
+library(pracma)
+
+```
+
+
+
+Load simulated single cell data set:
+
+```{r download data, warning = FALSE, message = FALSE}
+print_qc_plots = FALSE
+source('../R_functions/simulation_of_beta_data_set.R')
+sim_data <- read.csv(file = '../Data_after_Imputation/beta_3_4_10_filtered_saver.csv')
+true_labels <- read.csv(file = '../Data_after_Imputation/beta_cell_groups_3_4_10_after_filtering.csv')
+true_labels <- true_labels[, -c(1, 2)]
+
+rownames(sim_data) = sim_data[, 1]
+sim_data <- sim_data[,-1]
+true_labels <- true_labels[, -1]
+```
+
+Load the processing and scPMP clustering functions:
+
+```{r preprocess function}
+
+source('../R_functions/processing_prior_pm_clustering.R')
+source('../R_functions/Path_Metrics_Clustering_R.R')
+```
+
+## Step 2: Data set processing
+
+For all the function we introduce, the input data set has $d$ rows that correspond to features (genes) and $n$ columns that correspond to different points (cells). The user is advised to first filter the data set to achieve best quality. Then we suggest using our processing function prior to clustering. This function performs the following: 
+
+1. log-normalization (parameter *LogNormalization*)
+2. restriction to 2000 genes with the  highest variance (parameters *EliminateGenes*, *NumberOfGenes*)
+3. rescaling of genes with extremely high variance by using a cutoff value (parameter *var_cutoff*), 
+4. dimension reduction with PCA and
+5. denoising by replacing each a point with the mean of its local neighborhood (parameters *LocalAvgAllPts*, *LocalAvgNbhdSize*).
+
+Specifically, if the user prefers other type of normalization, they can set the parameter *LogNormalization* equal to FALSE and in the case that denoising isn't desired *LocalAvgAllPts* has to be set to FALSE.
+
+The simulated data set after steps 1 and 2 has the following distribution of gene variances. Values more than 0.5 (red line) are extremely rare. For this reason the variance cutoff for the simulated data set is 0.5.
+
+```{r varcutoff, echo=FALSE}
+
+#Lognormalization
+X = t(sim_data)
+X = diag(1/apply(X, 1, sum))%*%X*10000
+X = log(X+1)
+
+# Elinmination of genes
+NumberOfGenes = 2000
+
+gene_var <- apply(X, 2, function(x) var(x))
+sorted_var = sort(gene_var, decreasing = TRUE)
+cutoff = sorted_var[NumberOfGenes+1]
+high_var_genes = which(gene_var>cutoff)
+
+X_2000 = X[, high_var_genes]
+gene_var_2000 <- apply(X_2000, 2, function(x) var(x))
+```
+
+```{r varcutoff plot, echo=FALSE, out.width = "60%", fig.align = 'center'}
+# Variance distribution
+hist(gene_var_2000, main = "Histogram of gene expression variance", xlab = 'variance')
+
+abline(v = 0.5, col = 'red')
+
+```
+
+Below we process the simulated data set:
+```{r preprocess }
+set.seed(1)
+s1 <- proc.time()
+
+sim_data <- processing_prior_pm_clustering(dataset = sim_data,
+                                           LogNormalization = TRUE,
+                                           var_cutoff = 0.5,
+                                           EliminateGenes = TRUE,
+                                           NumberOfGenes = 2000,
+                                           LocalAvgAllPts = TRUE,
+                                           LocalAvgNbhdSize = 12)
+```
+
+## Step 3: scPMP Clustering 
+
+At this step scPMP will construct the  $k$NN graph of the data points. The default value of $k$ is the minimum between 500 and the number of data points, $n$. Then, the $p$-powered path metric distance matrix of the points on the $k$NN graph is calculated.
+
+When $p$ is small the algorithm will cluster the data based on their geometry. On the other hand, for large values  of $p$ the algorithm will predict cluster that are separated by low density regions. Although the optimal balance depends on the data set, path metrics with a moderate $p$ exhibit the best performance across a wide range of data sets. For this reason we suggest the use of $p=2$. 
+
+Following, classic multidimesional scaling is used to extract an embedding based on the path metric distances of points (PM-MDS embedding). The embedding dimension can be controlled by the parameter *SpectralOpts.EmbeddingDimension*, but as a default setting we predict the embedding dimension using an eigenratio criterion. For data sets that have more than two thousands points we suggest the use of fast multidimensional scaling, which is available by setting the parameter *Fast_mds* equal to TRUE.
+
+Finally, we apply $k$-means clustering on the PM-MDS embedding for *n_clust* number of clusters. By default, we merge tiny clusters (i.e. those with size less than $\sqrt{n}/2$) with their closest non-trivial cluster. For regular $k$-means clustering, users only need to set *run.adjusted.kmeans* equal to FALSE.
+
+If *n_clust* is unknown, prediction of number of clusters can be performed using the silhouette criterion by setting the parameter *silhouette* equal to TRUE. 
+
+Below we cluster the simulated data set:
+
+```{r clustering}    
+
+s2 <- proc.time()
+pm_output <- Path_Metrics_Clustering_R(dataset = sim_data,
+                                     n_clust = 3, # desired number of clusters
+                                     p = 2, # metric parameter
+                                     silhouette = FALSE, #prediction of clusters
+                                     SpectralOpts.LearnMDSEmbeddingDimension = TRUE,
+                                     Fast_mds = FALSE)
+end<-proc.time()
+```
+
+The output of scPMP algorithm is a list of four items: the predicted cluster labels, the PM-MDS embedding, the embedding dimension and lastly the eigenvalues of the embedding. 
+
+Using the first two dimensions of the embedding and coloring it based on true and predicted labels, we observe that there are only a few misclustered cells.
+
+```{r plotting, echo=FALSE, out.width = "80%", fig.align = 'center'}
+library(ggplot2)
+library(patchwork)
+
+cbfly <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+pmdata <- as.data.frame(t(pm_output$U1[1:2,]))
+pmdata$true_labels <- as.factor(true_labels)
+pmdata$predicted <- as.factor(pm_output$pm_labels)
+
+p1 <- ggplot(pmdata, aes(x=V1, y=V2)) + geom_point(aes(color = true_labels))
+
+p1 <- p1 + labs(x ='PM1', y='PM2')+ theme(legend.position = c(0.87, 0.17),
+                                        aspect.ratio=1,
+                                        legend.key.size = unit(0.5, 'cm'))
+
+p1 <- p1 + scale_colour_manual(values = cbfly)
+
+
+
+p2 <- ggplot(pmdata, aes(x=V1, y=V2)) + geom_point(aes(color = predicted))
+
+p2 <- p2 + labs(x ='PM1', y='PM2')+ theme(legend.position = c(0.87, 0.17),
+                                        aspect.ratio=1,
+                                        legend.key.size = unit(0.5, 'cm'))
+
+p2 <- p2 + scale_colour_manual(values = cbfly)
+
+p1 + p2
+```
+
+## Evaluation of clustering accuracy and runtime
+
+Now we can numerically evaluate the accuracy of the clustering using Adjusted Rand Index (ARI), Entropy of Cluster Accuracy (ECA) and Entropy of Cluster Purity (ECP). ECA quantifies the variety of true labels within a predicted cluster and ECP quantifies the variety of predicted cluster labels within a true group. Furthermore we record the time needed for processing and clustering. 
+
+We observe that the scPMP algorithm achieved high clustering accuracy, with $ARI = 0.969$ and low values of ECP and ECA. The time needed for both clustering and processing was less than a minute. 
+
+```{r evaluation}
+source('../R_functions/clustering_evaluation.R')
+
+accuracy<-clustering_evaluation(pm_output$pm_labels,t(true_labels))
+accuracy
+
+complete_rt=(end-s1)[3]/60
+complete_rt
+
+clustering_rt=(end-s2)[3]/60
+clustering_rt
+```
+
+## Evaluation of geometric fidelity of the PM-MDS embedding
+
+To assess whether the embedding procedure preserves the global relative distances between cluster we calculate the geometric perturbation between cluster means in the PCA embedding (ground truth) and in the PM-MDS embedding. Lower values of geometric perturbation mean better preservation of the cluster structure in the PM-MDS embedding. We observe that the geometric perturbation is equal with 0.005, which is extremely low.
+
+```{r geometric perturbation} 
+source('../R_functions/geometric_perturbation.R')
+  gp <- geometric_perturbation(X=sim_data,U=pm_output$U1,Labels=true_labels)
+  gp 
+```
+
+## Session Information
+
+```{r session info}
+sessionInfo()
+```
+
