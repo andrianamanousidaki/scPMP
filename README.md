@@ -11,6 +11,6 @@ By combining path metrics with multidimensional scaling, a low dimensional embed
 For the use of **scPMP**, please refer to our [R_tutorial](https://github.com/andrianamanousidaki/scPMP/tree/master/R_tutorial).
 
 For the reproduction of our results:
-1. Access and pre-process datasets by running the script [R_functions/Preparation_of_Data_Sets.R](https://github.com/andrianamanousidaki/scPMP/blob/master/R_functions/Preparation_of_Data_Sets.R)(Count_data folder contains only simulated manifold data sets)
+1. Access and pre-process datasets by running the script [R_functions/Preparation_of_Data_Sets.R](https://github.com/andrianamanousidaki/scPMP/blob/master/R_functions/Preparation_of_Data_Sets.R) (Count_data folder contains only simulated manifold data sets)
 2. Reproduce the results of a method for a particular dataset with the function [R_functions/clustering.R](https://github.com/andrianamanousidaki/scPMP/blob/master/R_functions/clustering.R)
 
